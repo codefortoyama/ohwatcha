@@ -1,0 +1,39 @@
+# Node
+/node_modules/
+/frontend/node_modules/
+
+# Build outputs
+/frontend/dist/
+
+# Env files
+.env
+.env.local
+.env.*.local
+**/.env
+
+# Directus data / DB
+/directus/data/
+/directus/postgres-data/
+
+# VS Code
+/.vscode/
+
+# OS
+.DS_Store
+
+# Logs
+/logs
+*.log
+
+# Misc
+.idea/
+.history/
+/.cache/
+node_modules/
+.env
+.DS_Store
+/dist
+/.cache
+./frontend/.env
+./frontend/.codex
+.codex
