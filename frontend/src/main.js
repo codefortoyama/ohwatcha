@@ -21,8 +21,17 @@ const MAX_AGE_HOURS = (() => {
   return Number.isFinite(n) && n >= 0 ? n : 2;
 })();
 
-const shishiIconUrl = `${baseUrl}icons/shishi.svg`;
-const shopIconUrl = `${baseUrl}icons/shop.svg`;
+import { createSampleIcon } from './components/SampleIcon.js';
+
+import shishiIconUrl from '../assets/icons/shishi.png';
+let shopIconUrl;
+// resolve optional shop.png without causing build-time unresolved import
+{
+  const icons = import.meta.glob('../assets/icons/*.png', { eager: true });
+  const key = '../assets/icons/shop.png';
+  const mod = icons[key];
+  shopIconUrl = mod ? (mod.default || mod) : shishiIconUrl;
+}
 
 const map = L.map('map').setView([36.78058, 137.09447], 15);
 const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -71,6 +80,17 @@ const menuHtml = `
   </aside>
 `;
 document.body.insertAdjacentHTML('afterbegin', menuHtml);
+
+// prepend sample icon to the menu header (demonstrates importing SVG as URL)
+try {
+  const aside = document.getElementById('shishi-menu');
+  if (aside) {
+    const h4 = aside.querySelector('h4');
+    if (h4) h4.prepend(createSampleIcon());
+  }
+} catch (e) {
+  console.warn('insert icon failed', e);
+}
 
 function renderShishiList(items) {
   const list = document.getElementById('shishi-list');
