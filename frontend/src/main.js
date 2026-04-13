@@ -186,6 +186,58 @@ locateBtn.addEventListener('click', () => {
 
 document.body.appendChild(locateBtn);
 
+// --- Sponsor banner (rotate images in frontend/assets/banner every 15s) ---
+{
+  const imgs = import.meta.glob('../assets/banner/*.{png,jpg,jpeg,svg,gif,webp}', { eager: true });
+  const urls = Object.values(imgs).map(m => (m && (m.default || m)) ).filter(Boolean);
+  if (urls.length > 0) {
+    // create container
+    const bannerWrap = document.createElement('div');
+    bannerWrap.id = 'sponsor-banner-wrap';
+    Object.assign(bannerWrap.style, {
+      position: 'fixed',
+      left: '0',
+      right: '0',
+      bottom: '0',
+      display: 'flex',
+      justifyContent: 'center',
+      alignItems: 'center',
+      padding: '6px',
+      background: 'rgba(255,255,255,0.95)',
+      boxShadow: '0 -2px 8px rgba(0,0,0,0.08)',
+      zIndex: 999,
+      pointerEvents: 'auto'
+    });
+
+    const img = document.createElement('img');
+    img.id = 'sponsor-banner';
+    img.src = urls[0];
+    Object.assign(img.style, {
+      maxHeight: '80px',
+      maxWidth: '90%',
+      objectFit: 'contain',
+      cursor: 'pointer'
+    });
+
+    bannerWrap.appendChild(img);
+    document.body.appendChild(bannerWrap);
+
+    // move locateBtn up to avoid overlap
+    try { locateBtn.style.bottom = '96px'; } catch (e) {}
+
+    let idx = 0;
+    const rotate = () => {
+      idx = (idx + 1) % urls.length;
+      img.src = urls[idx];
+    };
+    const timer = setInterval(rotate, 15000);
+
+    // pause rotation on hover
+    img.addEventListener('mouseenter', () => clearInterval(timer));
+    img.addEventListener('mouseleave', () => setInterval(rotate, 15000));
+  }
+}
+
 // startNavigation: obtain current position and open Google Maps directions
 window.startNavigation = function startNavigation(destLat, destLon) {
   if (!navigator.geolocation) {
