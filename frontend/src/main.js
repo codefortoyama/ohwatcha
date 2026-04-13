@@ -33,6 +33,14 @@ let shopIconUrl;
   shopIconUrl = mod ? (mod.default || mod) : shishiIconUrl;
 }
 
+let homeIconUrl = null;
+{
+  const iconsPng = import.meta.glob('../assets/icons/*.png', { eager: true });
+  const keyHome = '../assets/icons/home.png';
+  const modHome = iconsPng[keyHome];
+  homeIconUrl = modHome ? (modHome.default || modHome) : null;
+}
+
 const map = L.map('map').setView([36.78058, 137.09447], 15);
 const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '&copy; OpenStreetMap contributors'
@@ -69,6 +77,36 @@ const shopIcon = L.icon({
   popupAnchor: [0, -32]
 });
 
+// create homeIcon while preserving aspect ratio (fit within max size)
+let homeIcon = null;
+if (homeIconUrl) {
+  (function loadHomeIcon() {
+    const img = new Image();
+    img.src = homeIconUrl;
+    img.onload = () => {
+      const maxSize = 32; // max width/height to fit into
+      const scale = maxSize / Math.max(img.width || maxSize, img.height || maxSize);
+      const w = Math.max(8, Math.round((img.width || maxSize) * scale));
+      const h = Math.max(8, Math.round((img.height || maxSize) * scale));
+      homeIcon = L.icon({
+        iconUrl: homeIconUrl,
+        iconSize: [w, h],
+        iconAnchor: [Math.round(w / 2), h],
+        popupAnchor: [0, -h]
+      });
+      // apply to existing current location marker if present
+      try {
+        if (currentLocationMarker) currentLocationMarker.setIcon(homeIcon);
+      } catch (e) {
+        console.warn('apply homeIcon failed', e);
+      }
+    };
+    img.onerror = (e) => {
+      console.warn('failed to load home icon', e);
+    };
+  })();
+}
+
 const shishiMarkers = {};
 
 // --- Sidebar menu for current shishi list ---
@@ -91,6 +129,88 @@ try {
 } catch (e) {
   console.warn('insert icon failed', e);
 }
+
+// --- Current location button and handler ---
+let currentLocationMarker = null;
+
+const locateBtn = document.createElement('button');
+locateBtn.id = 'btn-current-location';
+locateBtn.textContent = '現在地';
+Object.assign(locateBtn.style, {
+  position: 'fixed',
+  right: '16px',
+  bottom: '16px',
+  zIndex: 1000,
+  background: '#ffffff',
+  border: '1px solid rgba(0,0,0,0.08)',
+  padding: '8px 10px',
+  borderRadius: '6px',
+  boxShadow: '0 2px 6px rgba(0,0,0,0.12)',
+  cursor: 'pointer'
+});
+locateBtn.title = '現在地を取得して地図の中心に移動';
+
+locateBtn.addEventListener('click', () => {
+  if (!navigator.geolocation) {
+    alert('このブラウザでは位置情報が利用できません');
+    return;
+  }
+
+  locateBtn.disabled = true;
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const lat = pos.coords.latitude;
+      const lon = pos.coords.longitude;
+      const coords = [lat, lon];
+
+      if (currentLocationMarker) {
+        currentLocationMarker.setLatLng(coords);
+        if (homeIcon) currentLocationMarker.setIcon(homeIcon);
+      } else {
+        const opts = homeIcon ? { icon: homeIcon } : {};
+        currentLocationMarker = L.marker(coords, opts).addTo(map);
+        currentLocationMarker.bindPopup('現在地').openPopup();
+      }
+
+      map.setView(coords, Math.max(map.getZoom(), 17), { animate: true });
+      locateBtn.disabled = false;
+    },
+    (err) => {
+      console.warn('geolocation error', err);
+      alert('現在地を取得できませんでした: ' + (err.message || err.code));
+      locateBtn.disabled = false;
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+  );
+});
+
+document.body.appendChild(locateBtn);
+
+// startNavigation: obtain current position and open Google Maps directions
+window.startNavigation = function startNavigation(destLat, destLon) {
+  if (!navigator.geolocation) {
+    alert('このブラウザでは位置情報が利用できません');
+    return;
+  }
+
+  const openMaps = (originLat, originLon) => {
+    const url = `https://www.google.com/maps/dir/?api=1&origin=${originLat},${originLon}&destination=${destLat},${destLon}&travelmode=walking`;
+    window.open(url, '_blank', 'noopener');
+  };
+
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      openMaps(pos.coords.latitude, pos.coords.longitude);
+    },
+    (err) => {
+      console.warn('geolocation error for navigation', err);
+      // fallback: open with destination only
+      const url = `https://www.google.com/maps/dir/?api=1&destination=${destLat},${destLon}&travelmode=walking`;
+      window.open(url, '_blank', 'noopener');
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+  );
+};
 
 function renderShishiList(items) {
   const list = document.getElementById('shishi-list');
@@ -269,11 +389,17 @@ function buildShopPopupContent(shop) {
 
 function buildShishiPopupContent(shishi) {
   const safeName = escapeHtml(shishi.name || '名称未設定');
+  const coords = extractCoordinates(shishi);
+  const navHtml = coords
+    ? `<p><button onclick="startNavigation(${coords[0]},${coords[1]})" style="display:inline-block;margin-top:8px;padding:6px 8px;background:#007bff;color:#fff;border-radius:4px;border:none;cursor:pointer">ナビ</button></p>`
+    : '';
+
   return `
     <div class="shishi-popup">
       <h3>${safeName}</h3>
       ${buildDescriptionHtml(shishi.description)}
       ${buildImageHtml(extractFileId(shishi.photo || shishi.image), shishi.name || '獅子舞画像')}
+      ${navHtml}
     </div>
   `;
 }
