@@ -41,6 +41,67 @@ let homeIconUrl = null;
   homeIconUrl = modHome ? (modHome.default || modHome) : null;
 }
 
+// build icon filename -> url map from assets/icons
+const iconFiles = import.meta.glob('../assets/icons/*.{png,webp}', { eager: true });
+const iconUrlMap = {};
+for (const p in iconFiles) {
+  const fn = p.split('/').pop();
+  iconUrlMap[fn] = (iconFiles[p] && (iconFiles[p].default || iconFiles[p]));
+}
+
+// shop icon cache by url
+const shopIconCache = new Map();
+function getLeafletIconForUrl(url, { iconSize = [32, 32] } = {}) {
+  if (!url) return null;
+  if (shopIconCache.has(url)) return shopIconCache.get(url);
+  try {
+    const ic = L.icon({ iconUrl: url, iconSize, iconAnchor: [Math.round(iconSize[0] / 2), iconSize[1]], popupAnchor: [0, -iconSize[1]] });
+    shopIconCache.set(url, ic);
+    return ic;
+  } catch (e) {
+    console.warn('create icon failed', e);
+    return null;
+  }
+}
+
+function getShopIconByType(type) {
+  if (!type) return getLeafletIconForUrl(shopIconUrl) || shopIcon;
+  // normalize type: trim, lowercase, NFKC
+  const normType = String(type).trim().toLowerCase().normalize('NFKC');
+  const candidates = [
+    `shop-${normType}.png`,
+    `shop_${normType}.png`,
+    `${normType}.png`,
+    `shop-${normType}.webp`,
+    `shop_${normType}.webp`,
+    `${normType}.webp`
+  ];
+
+  // exact filename match first
+  for (const c of candidates) {
+    if (iconUrlMap[c]) {
+      const ic = getLeafletIconForUrl(iconUrlMap[c]);
+      try { ic.__source = c; } catch (e) {}
+      return ic;
+    }
+  }
+
+  // loose match: search icon filenames for ones that include the normalized type
+  for (const fn in iconUrlMap) {
+    const nameOnly = fn.replace(/\.[^.]+$/, '').toLowerCase().normalize('NFKC');
+    if (nameOnly === normType || nameOnly.includes(normType) || normType.includes(nameOnly)) {
+      const ic = getLeafletIconForUrl(iconUrlMap[fn]);
+      try { ic.__source = fn + ' (loose)'; } catch (e) {}
+      return ic;
+    }
+  }
+
+  // final fallback
+  const fallback = getLeafletIconForUrl(shopIconUrl) || shopIcon;
+  try { fallback.__source = 'shop.png (fallback)'; } catch (e) {}
+  return fallback;
+}
+
 const map = L.map('map').setView([36.78058, 137.09447], 15);
 const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '&copy; OpenStreetMap contributors'
@@ -108,12 +169,23 @@ if (homeIconUrl) {
 }
 
 const shishiMarkers = {};
+// shop markers and data
+const shopMarkers = {};
+let shopsData = [];
+const SHOP_TYPE_MAP = {
+  '1': 'カフェ',
+  '2': '食事',
+  '3': '史跡',
+  '4': '公共施設'
+};
+const selectedShopTypes = new Set(Object.keys(SHOP_TYPE_MAP));
+let shopFilterRendered = false;
 
 // --- Sidebar menu for current shishi list ---
 const menuHtml = `
   <aside id="shishi-menu" style="position:absolute;left:72px;top:8px;z-index:1000;
     background:white;padding:8px;border-radius:6px;max-height:70vh;overflow:auto;width:240px;box-shadow:0 2px 8px rgba(0,0,0,0.2)">
-    <h4 style="margin:0 0 8px 0">現在地一覧</h4>
+    <h4 style="margin:0 0 8px 0"><span class="shishi-menu-title">獅子舞リスト</span></h4>
     <ul id="shishi-list" style="list-style:none;padding:0;margin:0;"></ul>
   </aside>
 `;
@@ -128,6 +200,75 @@ try {
   }
 } catch (e) {
   console.warn('insert icon failed', e);
+}
+
+// reduce font size for shishi list title and items
+try {
+  const style = document.createElement('style');
+  style.textContent = `
+    #shishi-menu .shishi-menu-title { font-size: 0.85rem; }
+    #shishi-menu #shishi-list { font-size: 0.85rem; }
+    #shishi-menu #shishi-list li { font-size: 0.85rem; }
+  `;
+  document.head.appendChild(style);
+} catch (e) {
+  console.warn('apply shishi font-size failed', e);
+}
+
+// make the current-location list collapsible
+try {
+  const aside = document.getElementById('shishi-menu');
+  if (aside) {
+    const header = aside.querySelector('h4');
+    const list = aside.querySelector('#shishi-list');
+    if (header && list) {
+      // style header for flexible layout
+      header.style.display = 'flex';
+      header.style.alignItems = 'center';
+      header.style.justifyContent = 'space-between';
+
+      const toggle = document.createElement('button');
+      toggle.id = 'shishi-menu-toggle';
+      toggle.setAttribute('aria-expanded', 'true');
+      toggle.title = '折りたたむ／開く';
+      toggle.textContent = '▾';
+      Object.assign(toggle.style, {
+        background: 'transparent',
+        border: 'none',
+        cursor: 'pointer',
+        fontSize: '16px',
+        lineHeight: '1'
+      });
+
+      header.appendChild(toggle);
+
+      let collapsed = false;
+      const applyState = () => {
+        if (collapsed) {
+          // keep the header visible but hide the list; reduce width
+          aside.style.width = '140px';
+          list.style.display = 'none';
+          toggle.textContent = '▸';
+          toggle.setAttribute('aria-expanded', 'false');
+        } else {
+          aside.style.width = '240px';
+          list.style.display = '';
+          toggle.textContent = '▾';
+          toggle.setAttribute('aria-expanded', 'true');
+        }
+      };
+
+      toggle.addEventListener('click', () => {
+        collapsed = !collapsed;
+        applyState();
+      });
+
+      // initial state (expanded)
+      applyState();
+    }
+  }
+} catch (e) {
+  console.warn('collapsible menu setup failed', e);
 }
 
 // --- Current location button and handler ---
@@ -213,7 +354,7 @@ document.body.appendChild(locateBtn);
     img.id = 'sponsor-banner';
     img.src = urls[0];
     Object.assign(img.style, {
-      maxHeight: '80px',
+      maxHeight: '40px',
       maxWidth: '90%',
       objectFit: 'contain',
       cursor: 'pointer'
@@ -222,8 +363,8 @@ document.body.appendChild(locateBtn);
     bannerWrap.appendChild(img);
     document.body.appendChild(bannerWrap);
 
-    // move locateBtn up to avoid overlap
-    try { locateBtn.style.bottom = '96px'; } catch (e) {}
+    // move locateBtn up to avoid overlap (adjusted for smaller banner)
+    try { locateBtn.style.bottom = '56px'; } catch (e) {}
 
     let idx = 0;
     const rotate = () => {
@@ -290,6 +431,107 @@ function renderShishiList(items) {
       }
     });
     list.appendChild(li);
+  });
+}
+
+function renderShopFilterUI() {
+  if (shopFilterRendered) return;
+  shopFilterRendered = true;
+  const html = `
+    <aside id="shop-menu" style="position:absolute;left:340px;top:8px;z-index:1000;background:white;padding:8px;border-radius:6px;max-height:70vh;overflow:auto;width:200px;box-shadow:0 2px 8px rgba(0,0,0,0.2)">
+      <h4 style="margin:0 0 8px 0"><span class="shop-menu-title">施設情報</span></h4>
+      <form id="shop-type-form" style="margin:0;padding:0;">
+      </form>
+    </aside>
+  `;
+  document.body.insertAdjacentHTML('afterbegin', html);
+
+  const aside = document.getElementById('shop-menu');
+  const header = aside.querySelector('h4');
+  const form = document.getElementById('shop-type-form');
+
+  // style header for flexible layout and add toggle (default collapsed)
+  header.style.display = 'flex';
+  header.style.alignItems = 'center';
+  header.style.justifyContent = 'space-between';
+
+  const toggle = document.createElement('button');
+  toggle.id = 'shop-menu-toggle';
+  toggle.setAttribute('aria-expanded', 'false');
+  toggle.title = '折りたたむ／開く';
+  toggle.textContent = '▸';
+  Object.assign(toggle.style, {
+    background: 'transparent',
+    border: 'none',
+    cursor: 'pointer',
+    fontSize: '16px',
+    lineHeight: '1'
+  });
+
+  header.appendChild(toggle);
+
+  // build checkboxes
+  Object.entries(SHOP_TYPE_MAP).forEach(([k, v]) => {
+    const id = `shop-type-${k}`;
+    const wrapper = document.createElement('div');
+    wrapper.style.marginBottom = '6px';
+    wrapper.innerHTML = `<label style="cursor:pointer"><input type="checkbox" id="${id}" data-val="${k}" checked> ${escapeHtml(v)}</label>`;
+    form.appendChild(wrapper);
+    const cb = wrapper.querySelector('input');
+    cb.addEventListener('change', () => {
+      if (cb.checked) selectedShopTypes.add(k); else selectedShopTypes.delete(k);
+      renderShops();
+    });
+  });
+
+  // collapsible behavior
+  let collapsed = true; // default collapsed
+  const applyState = () => {
+    if (collapsed) {
+      aside.style.width = '140px';
+      form.style.display = 'none';
+      toggle.textContent = '▸';
+      toggle.setAttribute('aria-expanded', 'false');
+    } else {
+      aside.style.width = '200px';
+      form.style.display = '';
+      toggle.textContent = '▾';
+      toggle.setAttribute('aria-expanded', 'true');
+    }
+  };
+
+  toggle.addEventListener('click', () => {
+    collapsed = !collapsed;
+    applyState();
+  });
+
+  applyState();
+}
+
+function renderShops() {
+  // remove existing markers
+  Object.keys(shopMarkers).forEach((id) => {
+    try { map.removeLayer(shopMarkers[id]); } catch (e) {}
+    delete shopMarkers[id];
+  });
+
+  if (!Array.isArray(shopsData) || shopsData.length === 0) return;
+
+  shopsData.forEach((shop) => {
+    const coords = extractCoordinates(shop);
+    if (!coords) return;
+    const id = String(shop.id ?? shop.name ?? `${coords[0]}:${coords[1]}`);
+    const type = shop.type || shop.category || shop.shop_type || null;
+    const typeVal = String(type ?? '');
+    if (!selectedShopTypes.has(typeVal)) return; // filtered out
+
+    const iconForShop = getShopIconByType(String(type || '').toLowerCase());
+    const marker = L.marker(coords, { icon: iconForShop || shopIcon }).addTo(map);
+    marker.bindPopup(buildShopPopupContent(shop), {
+      maxWidth: 300,
+      className: 'shop-popup-container'
+    });
+    shopMarkers[id] = marker;
   });
 }
 
@@ -422,22 +664,97 @@ function buildImageHtml(imageId, altText) {
     : '<div class="popup-image-empty">画像なし</div>';
 }
 
+// attempt to find an external URL from various possible fields/shapes
+function extractUrlFromField(raw) {
+  if (!raw) return null;
+  if (typeof raw === 'string') return raw;
+  if (Array.isArray(raw) && raw.length > 0) return extractUrlFromField(raw[0]);
+  if (typeof raw === 'object') {
+    if (raw.url) return raw.url;
+    if (raw.href) return raw.href;
+    if (raw.path) return raw.path;
+    if (raw.redirect) return raw.redirect;
+    if (raw.full_url) return raw.full_url;
+    if (raw.data) return extractUrlFromField(raw.data);
+    if (raw.value) return raw.value;
+  }
+  return null;
+}
+
+function resolveExternalUrl(shop) {
+  if (!shop || typeof shop !== 'object') return null;
+  const keys = ['url', 'website', 'link', 'external_url', 'website_url', 'instagram_url'];
+  for (const k of keys) {
+    if (k in shop) {
+      const raw = shop[k];
+      const got = extractUrlFromField(raw);
+      if (got) return got;
+    }
+  }
+  // also check any field that looks like it might contain a URL
+  for (const k of Object.keys(shop)) {
+    if (k.toLowerCase().includes('url') || k.toLowerCase().includes('link') || k.toLowerCase().includes('website')) {
+      const got = extractUrlFromField(shop[k]);
+      if (got) return got;
+    }
+  }
+  return null;
+}
+
 function buildShopPopupContent(shop) {
   const safeName = escapeHtml(shop.name || '名称未設定');
-  const instagramUrl = sanitizeExternalUrl(shop.instagram_url);
-  const instagramHtml = instagramUrl
-    ? `<p><a href="${instagramUrl}" target="_blank" rel="noopener noreferrer">Instagram</a></p>`
+  // prefer common URL fields; fallback to instagram_url if present
+  const externalCandidate = resolveExternalUrl(shop);
+  const externalUrl = sanitizeExternalUrl(externalCandidate);
+  console.log('shop external candidate', { name: shop.name, externalCandidate, externalUrl, shop });
+  const externalHtml = externalUrl
+    ? `<p><a href="${externalUrl}" target="_blank" rel="noopener noreferrer">詳しくはこちら</a></p>`
     : '';
+
+  // if no sanitized URL, collect candidate fields for debugging and show them
+  let debugHtml = '';
+  if (!externalUrl) {
+    const candidates = {};
+    // check common named fields
+    const keys = ['url', 'website', 'link', 'external_url', 'website_url', 'instagram_url'];
+    for (const k of keys) {
+      if (k in shop) {
+        const v = extractUrlFromField(shop[k]);
+        if (v) candidates[k] = v;
+      }
+    }
+    // also check any field name that looks like url/link/website
+    for (const k of Object.keys(shop)) {
+      const lk = k.toLowerCase();
+      if ((lk.includes('url') || lk.includes('link') || lk.includes('website')) && !(k in candidates)) {
+        const v = extractUrlFromField(shop[k]);
+        if (v) candidates[k] = v;
+      }
+    }
+
+    if (Object.keys(candidates).length > 0) {
+      debugHtml = `<details style="margin-top:6px"><summary>デバッグ: URL候補</summary><pre style="white-space:pre-wrap">${escapeHtml(JSON.stringify(candidates, null, 2))}</pre></details>`;
+    }
+    // also include full shop object for deeper inspection
+    try {
+      debugHtml += `<details style="margin-top:6px"><summary>デバッグ: 全データ</summary><pre style="white-space:pre-wrap">${escapeHtml(JSON.stringify(shop, null, 2))}</pre></details>`;
+    } catch (e) {
+      // ignore
+    }
+  }
 
   return `
     <div class="shop-popup">
       <h3>${safeName}</h3>
       ${buildDescriptionHtml(shop.description)}
       ${buildImageHtml(extractFileId(shop.image || shop.photo), shop.name || '店舗画像')}
-      ${instagramHtml}
+      ${externalHtml}
+      ${debugHtml}
     </div>
   `;
 }
+
+
 
 function buildShishiPopupContent(shishi) {
   const safeName = escapeHtml(shishi.name || '名称未設定');
@@ -486,19 +803,10 @@ async function fetchShops() {
     return;
   }
 
-  shops.forEach((shop) => {
-    const coords = extractCoordinates(shop);
-    if (!coords) {
-      console.warn('skip shop missing coords', shop.id || shop.name);
-      return;
-    }
-
-    const marker = L.marker(coords, { icon: shopIcon }).addTo(map);
-    marker.bindPopup(buildShopPopupContent(shop), {
-      maxWidth: 300,
-      className: 'shop-popup-container'
-    });
-  });
+  // store and render with filters
+  shopsData = shops;
+  try { renderShopFilterUI(); } catch (e) { console.warn('renderShopFilterUI failed', e); }
+  try { renderShops(); } catch (e) { console.warn('renderShops failed', e); }
 }
 
 async function updateShishiLocation() {
