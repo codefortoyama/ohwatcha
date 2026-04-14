@@ -102,7 +102,7 @@ function getShopIconByType(type) {
   return fallback;
 }
 
-const map = L.map('map').setView([36.78058, 137.09447], 15);
+const map = L.map('map', { zoomControl: false }).setView([36.78058, 137.09447], 15);
 const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '&copy; OpenStreetMap contributors'
 });
@@ -117,12 +117,118 @@ const gsiAerial = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/ort/{z}/{x}/
 });
 
 gsiAerial.addTo(map);
-L.control.layers({
+const layerControl = L.control.layers({
   OpenStreetMap: osmLayer,
   '地理院地図（標準）': gsiStd,
   '地理院地図（淡色）': gsiPale,
   '地理院地図（空中写真）': gsiAerial
-}).addTo(map);
+}, null, { position: 'bottomright' }).addTo(map);
+
+// Nudge the layer control up so it doesn't overlap browser bottom UI
+try {
+  const container = layerControl && layerControl.getContainer && layerControl.getContainer();
+  if (container && container.style) {
+    // lift above typical browser bottom bars; tweak value if necessary
+    container.style.bottom = '72px';
+    // keep a small right offset
+    container.style.right = '12px';
+    container.style.zIndex = '1005';
+  }
+} catch (e) {
+  console.warn('adjust layer control position failed', e);
+}
+
+// adjust map height when a bottom banner is present so they don't overlap
+function adjustMapForBanner() {
+  try {
+    const mapEl = document.getElementById('map');
+    if (!mapEl) return;
+    const banner = document.getElementById('sponsor-banner-wrap');
+
+    // Create a layout container that stacks map above banner using flex column
+    let appFrame = document.getElementById('app-frame');
+    if (!appFrame) {
+      appFrame = document.createElement('div');
+      appFrame.id = 'app-frame';
+      Object.assign(appFrame.style, {
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100dvh',
+        minHeight: '100vh',
+        width: '100%',
+        overflow: 'hidden'
+      });
+      // insert appFrame at the top of body
+      document.body.insertBefore(appFrame, document.body.firstChild);
+    }
+
+    // map uses all remaining vertical space above banner
+    if (mapEl.parentElement !== appFrame) appFrame.prepend(mapEl);
+    Object.assign(mapEl.style, {
+      position: 'relative',
+      flex: '1 1 auto',
+      width: '100%',
+      height: 'auto',
+      minHeight: '0'
+    });
+
+    if (banner) {
+      // move banner into appFrame before the map so it's above the map in flow
+      if (banner.parentElement !== appFrame) appFrame.insertBefore(banner, mapEl);
+      // banner keeps intrinsic height and never overlaps map
+      Object.assign(banner.style, {
+        position: 'relative',
+        width: '100%',
+        left: '',
+        right: '',
+        top: '',
+        zIndex: '999',
+        flex: '0 0 auto'
+      });
+    }
+
+    // position the sidebar menu and locate button under the banner (if present)
+    try {
+      const bannerEl = document.getElementById('sponsor-banner-wrap');
+      const menuEl = document.getElementById('shishi-menu');
+      const bannerHeight = bannerEl ? bannerEl.offsetHeight || 0 : 0;
+
+      if (menuEl) {
+        // menu is fixed positioned; shift it below the banner
+        menuEl.style.position = 'fixed';
+        menuEl.style.left = menuEl.style.left || '8px';
+        menuEl.style.top = `${Math.max(8, bannerHeight + 8)}px`;
+        menuEl.style.zIndex = '1000';
+      }
+
+      if (locateBtn) {
+        // place locateBtn fixed at top-right under the banner
+        Object.assign(locateBtn.style, {
+          position: 'fixed',
+          right: '16px',
+          top: `${Math.max(8, bannerHeight + 12)}px`,
+          zIndex: '1001'
+        });
+        // ensure it's in document flow (if not already)
+        if (!locateBtn.parentElement || locateBtn.parentElement !== document.body) document.body.appendChild(locateBtn);
+      }
+    } catch (e) {
+      console.warn('positioning menu/locateBtn failed', e);
+    }
+
+    // ensure leaflet recalculates size after layout changes and image load
+    if (typeof map !== 'undefined' && map && map.invalidateSize) {
+      requestAnimationFrame(() => {
+        map.invalidateSize();
+        setTimeout(() => map.invalidateSize(), 120);
+      });
+    }
+  } catch (e) {
+    console.warn('adjustMapForBanner failed', e);
+  }
+}
+window.addEventListener('resize', adjustMapForBanner);
+adjustMapForBanner();
 
 const shishiIcon = L.icon({
   iconUrl: shishiIconUrl,
@@ -181,12 +287,13 @@ const SHOP_TYPE_MAP = {
 const selectedShopTypes = new Set(Object.keys(SHOP_TYPE_MAP));
 let shopFilterRendered = false;
 
-// --- Sidebar menu for current shishi list ---
+// --- Sidebar menu for current shishi list (merged into single "スポット" panel) ---
 const menuHtml = `
-  <aside id="shishi-menu" style="position:absolute;left:72px;top:8px;z-index:1000;
-    background:white;padding:8px;border-radius:6px;max-height:70vh;overflow:auto;width:240px;box-shadow:0 2px 8px rgba(0,0,0,0.2)">
-    <h4 style="margin:0 0 8px 0"><span class="shishi-menu-title">獅子舞リスト</span></h4>
+  <aside id="shishi-menu" style="position:fixed;left:8px;top:8px;z-index:1000;
+    background:white;padding:8px;border-radius:6px;max-height:70vh;overflow:auto;width:260px;box-shadow:0 2px 8px rgba(0,0,0,0.2)">
+    <h4 style="margin:0 0 8px 0"><span class="shishi-menu-title">スポット</span></h4>
     <ul id="shishi-list" style="list-style:none;padding:0;margin:0;"></ul>
+    <!-- shop filters will be injected here by renderShopFilterUI -->
   </aside>
 `;
 document.body.insertAdjacentHTML('afterbegin', menuHtml);
@@ -276,7 +383,16 @@ let currentLocationMarker = null;
 
 const locateBtn = document.createElement('button');
 locateBtn.id = 'btn-current-location';
-locateBtn.textContent = '現在地';
+// replace text with an accessible icon (visible label kept for screen readers)
+locateBtn.innerHTML = `
+  <span aria-hidden="true" style="display:inline-block;width:20px;height:20px;line-height:0">
+    <svg viewBox="0 0 24 24" width="20" height="20" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#333" stroke-width="1.8">
+      <circle cx="12" cy="12" r="8" />
+      <circle cx="12" cy="12" r="2" fill="#333" stroke="none" />
+    </svg>
+  </span>
+  <span style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0">現在地</span>
+`;
 Object.assign(locateBtn.style, {
   position: 'fixed',
   right: '16px',
@@ -284,10 +400,15 @@ Object.assign(locateBtn.style, {
   zIndex: 1000,
   background: '#ffffff',
   border: '1px solid rgba(0,0,0,0.08)',
-  padding: '8px 10px',
-  borderRadius: '6px',
+  width: '40px',
+  height: '40px',
+  padding: '6px',
+  borderRadius: '50%',
   boxShadow: '0 2px 6px rgba(0,0,0,0.12)',
-  cursor: 'pointer'
+  cursor: 'pointer',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center'
 });
 locateBtn.title = '現在地を取得して地図の中心に移動';
 
@@ -325,7 +446,10 @@ locateBtn.addEventListener('click', () => {
   );
 });
 
-document.body.appendChild(locateBtn);
+// if a banner wasn't created (no sponsor images), append locateBtn to body
+if (!document.getElementById('sponsor-banner-wrap')) {
+  document.body.appendChild(locateBtn);
+}
 
 // --- Sponsor banner (rotate images in frontend/assets/banner every 15s) ---
 {
@@ -336,35 +460,115 @@ document.body.appendChild(locateBtn);
     const bannerWrap = document.createElement('div');
     bannerWrap.id = 'sponsor-banner-wrap';
     Object.assign(bannerWrap.style, {
-      position: 'fixed',
+      position: 'relative',
       left: '0',
       right: '0',
-      bottom: '0',
+      top: '0',
+      flex: '0 0 auto',
       display: 'flex',
       justifyContent: 'center',
       alignItems: 'center',
       padding: '6px',
       background: 'rgba(255,255,255,0.95)',
-      boxShadow: '0 -2px 8px rgba(0,0,0,0.08)',
-      zIndex: 999,
+      boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+      // ensure banner sits above leaflet map panes/controls
+      zIndex: 2002,
       pointerEvents: 'auto'
     });
 
     const img = document.createElement('img');
     img.id = 'sponsor-banner';
-    img.src = urls[0];
     Object.assign(img.style, {
       maxHeight: '40px',
       maxWidth: '90%',
       objectFit: 'contain',
-      cursor: 'pointer'
+      cursor: 'pointer',
+      display: 'block'
     });
 
-    bannerWrap.appendChild(img);
-    document.body.appendChild(bannerWrap);
+    // try each URL until one loads (fallback for formats not supported on some devices)
+    let bannerIdx = 0;
+    const tryLoad = (i) => {
+      if (!urls || urls.length === 0) return;
+      bannerIdx = i % urls.length;
+      img.src = urls[bannerIdx];
+    };
 
-    // move locateBtn up to avoid overlap (adjusted for smaller banner)
-    try { locateBtn.style.bottom = '56px'; } catch (e) {}
+    img.onload = () => {
+      // ensure visible when loaded
+      try {
+        bannerWrap.style.display = 'flex';
+        adjustMapForBanner();
+      } catch (e) {}
+    };
+    img.onerror = () => {
+      // try next url
+      const next = (bannerIdx + 1) % urls.length;
+      if (next === bannerIdx) {
+        console.warn('sponsor banner: all image URLs failed to load', urls);
+        return;
+      }
+      tryLoad(next);
+    };
+
+    // start trying to load
+    tryLoad(0);
+    // center the image inside a flexible container so it's always centered
+    const imgContainer = document.createElement('div');
+    Object.assign(imgContainer.style, {
+      display: 'flex',
+      justifyContent: 'center',
+      alignItems: 'center',
+      flex: '1 1 auto'
+    });
+    // left label "協賛" placed immediately to the left of the image
+    const leftLabel = document.createElement('div');
+    leftLabel.textContent = '協賛';
+    Object.assign(leftLabel.style, {
+      marginRight: '8px',
+      flex: '0 0 auto',
+      fontSize: '0.95rem',
+      fontWeight: '600',
+      color: '#333',
+      pointerEvents: 'none'
+    });
+    // append label then image so label appears to the left of the image
+    imgContainer.appendChild(leftLabel);
+    imgContainer.appendChild(img);
+    bannerWrap.appendChild(imgContainer);
+
+    // Do NOT append the locate button into the banner; it will be positioned
+    // below the banner by `adjustMapForBanner` so it doesn't interfere with centering.
+    try {
+      // clear any banner-specific positioning previously applied
+      Object.assign(locateBtn.style, {
+        position: '',
+        right: '',
+        top: '',
+        transform: '',
+        zIndex: 1000
+      });
+    } catch (e) {
+      console.warn('prepare locateBtn failed', e);
+    }
+    document.body.insertBefore(bannerWrap, document.body.firstChild);
+    try { adjustMapForBanner(); } catch (e) {}
+
+    // if banner has zero height on some devices, force visible style and try to reload image
+    setTimeout(() => {
+      try {
+        const h = bannerWrap.offsetHeight;
+        if (!h || h === 0) {
+          console.warn('sponsor banner appears zero-height; forcing display');
+          bannerWrap.style.display = 'flex';
+          bannerWrap.style.visibility = 'visible';
+          bannerWrap.style.opacity = '1';
+          // re-attempt load sequence
+          tryLoad((bannerIdx + 1) % urls.length);
+          adjustMapForBanner();
+        }
+      } catch (e) {}
+    }, 400);
 
     let idx = 0;
     const rotate = () => {
@@ -381,25 +585,66 @@ document.body.appendChild(locateBtn);
 
 // startNavigation: obtain current position and open Google Maps directions
 window.startNavigation = function startNavigation(destLat, destLon) {
+  if (destLat == null || destLon == null) return;
+
+  const lat = encodeURIComponent(destLat);
+  const lon = encodeURIComponent(destLon);
+  const webUrl = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}&travelmode=walking`;
+
+  // Prefer native map app on mobile using platform-specific schemes/intents
+  if (isMobileDevice()) {
+    try {
+      const ua = (navigator.userAgent || '').toLowerCase();
+      const isAndroid = /android/.test(ua);
+      const isIOS = /iphone|ipad|ipod/.test(ua);
+
+      const comgoogle = `comgooglemaps://?daddr=${lat},${lon}&directionsmode=walking`;
+      const appleMaps = `http://maps.apple.com/?daddr=${lat},${lon}&dirflg=w`;
+      const intentUrl = `intent://www.google.com/maps/dir/?api=1&destination=${lat},${lon}#Intent;package=com.google.android.apps.maps;scheme=https;end`;
+
+      if (isIOS) {
+        // try Google Maps scheme first, then Apple Maps
+        window.location.href = comgoogle;
+        // if app not installed, fallback to Apple Maps after short delay
+        setTimeout(() => { window.location.href = appleMaps; }, 800);
+        return;
+      }
+
+      if (isAndroid) {
+        // intent should open Google Maps app on Android Chrome
+        window.location.href = intentUrl;
+        // fallback to web view if intent not handled
+        setTimeout(() => { window.location.href = webUrl; }, 800);
+        return;
+      }
+
+      // other mobile browsers: try Google Maps scheme then web
+      window.location.href = comgoogle;
+      setTimeout(() => { window.location.href = webUrl; }, 800);
+      return;
+    } catch (e) {
+      console.warn('mobile navigation attempt failed', e);
+      window.open(webUrl, '_blank', 'noopener');
+      return;
+    }
+  }
+
+  // Desktop behavior: try to get origin then open directions in new tab
   if (!navigator.geolocation) {
-    alert('このブラウザでは位置情報が利用できません');
+    window.open(webUrl, '_blank', 'noopener');
     return;
   }
 
-  const openMaps = (originLat, originLon) => {
-    const url = `https://www.google.com/maps/dir/?api=1&origin=${originLat},${originLon}&destination=${destLat},${destLon}&travelmode=walking`;
-    window.open(url, '_blank', 'noopener');
-  };
-
   navigator.geolocation.getCurrentPosition(
     (pos) => {
-      openMaps(pos.coords.latitude, pos.coords.longitude);
+      const originLat = pos.coords.latitude;
+      const originLon = pos.coords.longitude;
+      const url = `https://www.google.com/maps/dir/?api=1&origin=${originLat},${originLon}&destination=${lat},${lon}&travelmode=walking`;
+      window.open(url, '_blank', 'noopener');
     },
     (err) => {
       console.warn('geolocation error for navigation', err);
-      // fallback: open with destination only
-      const url = `https://www.google.com/maps/dir/?api=1&destination=${destLat},${destLon}&travelmode=walking`;
-      window.open(url, '_blank', 'noopener');
+      window.open(webUrl, '_blank', 'noopener');
     },
     { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
   );
@@ -437,45 +682,32 @@ function renderShishiList(items) {
 function renderShopFilterUI() {
   if (shopFilterRendered) return;
   shopFilterRendered = true;
-  const html = `
-    <aside id="shop-menu" style="position:absolute;left:340px;top:8px;z-index:1000;background:white;padding:8px;border-radius:6px;max-height:70vh;overflow:auto;width:200px;box-shadow:0 2px 8px rgba(0,0,0,0.2)">
-      <h4 style="margin:0 0 8px 0"><span class="shop-menu-title">施設情報</span></h4>
-      <form id="shop-type-form" style="margin:0;padding:0;">
-      </form>
-    </aside>
+
+  const aside = document.getElementById('shishi-menu');
+  if (!aside) return;
+
+  // create filter container inside the existing "スポット" panel
+  const container = document.createElement('div');
+  container.id = 'shop-filters';
+  container.style.marginTop = '8px';
+  container.innerHTML = `
+    <h5 style="margin:0 0 6px 0;display:flex;align-items:center;justify-content:space-between;font-size:0.95rem">
+      <span>施設情報</span>
+      <button id="shop-filters-toggle" aria-expanded="false" title="折りたたむ／開く" style="background:transparent;border:none;cursor:pointer;font-size:14px;line-height:1">▸</button>
+    </h5>
+    <form id="shop-type-form" style="margin:6px 0 0 0;padding:0;display:none"></form>
   `;
-  document.body.insertAdjacentHTML('afterbegin', html);
+  aside.appendChild(container);
 
-  const aside = document.getElementById('shop-menu');
-  const header = aside.querySelector('h4');
   const form = document.getElementById('shop-type-form');
-
-  // style header for flexible layout and add toggle (default collapsed)
-  header.style.display = 'flex';
-  header.style.alignItems = 'center';
-  header.style.justifyContent = 'space-between';
-
-  const toggle = document.createElement('button');
-  toggle.id = 'shop-menu-toggle';
-  toggle.setAttribute('aria-expanded', 'false');
-  toggle.title = '折りたたむ／開く';
-  toggle.textContent = '▸';
-  Object.assign(toggle.style, {
-    background: 'transparent',
-    border: 'none',
-    cursor: 'pointer',
-    fontSize: '16px',
-    lineHeight: '1'
-  });
-
-  header.appendChild(toggle);
+  const toggle = document.getElementById('shop-filters-toggle');
 
   // build checkboxes
   Object.entries(SHOP_TYPE_MAP).forEach(([k, v]) => {
     const id = `shop-type-${k}`;
     const wrapper = document.createElement('div');
     wrapper.style.marginBottom = '6px';
-    wrapper.innerHTML = `<label style="cursor:pointer"><input type="checkbox" id="${id}" data-val="${k}" checked> ${escapeHtml(v)}</label>`;
+    wrapper.innerHTML = `<label style="cursor:pointer;font-size:0.85rem"><input type="checkbox" id="${id}" data-val="${k}" checked> ${escapeHtml(v)}</label>`;
     form.appendChild(wrapper);
     const cb = wrapper.querySelector('input');
     cb.addEventListener('change', () => {
@@ -484,16 +716,14 @@ function renderShopFilterUI() {
     });
   });
 
-  // collapsible behavior
-  let collapsed = true; // default collapsed
+  // collapsible behavior for filters (default collapsed)
+  let collapsed = true;
   const applyState = () => {
     if (collapsed) {
-      aside.style.width = '140px';
       form.style.display = 'none';
       toggle.textContent = '▸';
       toggle.setAttribute('aria-expanded', 'false');
     } else {
-      aside.style.width = '200px';
       form.style.display = '';
       toggle.textContent = '▾';
       toggle.setAttribute('aria-expanded', 'true');
@@ -563,6 +793,17 @@ function sanitizeExternalUrl(value) {
   }
 
   return null;
+}
+
+// lightweight mobile detection: userAgent or coarse pointer
+function isMobileDevice() {
+  try {
+    if (typeof navigator !== 'undefined' && /Mobi|Android|iPhone|iPad|iPod|Windows Phone|webOS/i.test(navigator.userAgent)) return true;
+    if (typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(pointer:coarse)').matches) return true;
+  } catch (e) {
+    // ignore
+  }
+  return false;
 }
 
 function extractFileId(fileField) {
@@ -649,6 +890,25 @@ function isWithinHours(timestamp, hours) {
   if (!timestamp) return false;
   const ageMs = Date.now() - timestamp;
   return ageMs <= hours * 60 * 60 * 1000;
+}
+
+function attachAutoNavigationOnPopupOpen(marker, coords) {
+  if (!marker || !coords) return;
+  try {
+    if (marker.__autoNavAttached) return;
+    marker.__autoNavAttached = true;
+    marker.on('popupopen', () => {
+      if (isMobileDevice()) {
+        try {
+          startNavigation(coords[0], coords[1]);
+        } catch (e) {
+          console.warn('auto startNavigation failed', e);
+        }
+      }
+    });
+  } catch (e) {
+    // ignore
+  }
 }
 
 function buildDescriptionHtml(description) {
@@ -760,7 +1020,7 @@ function buildShishiPopupContent(shishi) {
   const safeName = escapeHtml(shishi.name || '名称未設定');
   const coords = extractCoordinates(shishi);
   const navHtml = coords
-    ? `<p><button onclick="startNavigation(${coords[0]},${coords[1]})" style="display:inline-block;margin-top:8px;padding:6px 8px;background:#007bff;color:#fff;border-radius:4px;border:none;cursor:pointer">ナビ</button></p>`
+    ? `<p><button onclick="startNavigation(${coords[0]},${coords[1]})" style="display:inline-block;margin-top:8px;padding:6px 8px;background:#007bff;color:#fff;border-radius:4px;border:none;cursor:pointer">ここまで行く</button></p>`
     : '';
 
   return `
