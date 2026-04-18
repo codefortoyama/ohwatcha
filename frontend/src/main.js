@@ -322,6 +322,18 @@ try {
   console.warn('apply shishi font-size failed', e);
 }
 
+// ensure popup images never overflow their popup containers
+try {
+  const popupStyle = document.createElement('style');
+  popupStyle.textContent = `
+    .shop-popup img, .shishi-popup img { max-width: 100%; height: auto; max-height: 40vh; display: block; object-fit: cover; }
+    .shop-popup .popup-image-empty, .shishi-popup .popup-image-empty { color: #666; font-size: 0.95rem; }
+  `;
+  document.head.appendChild(popupStyle);
+} catch (e) {
+  console.warn('apply popup image styles failed', e);
+}
+
 // make the current-location list collapsible
 try {
   const aside = document.getElementById('shishi-menu');
@@ -920,7 +932,7 @@ function buildDescriptionHtml(description) {
 function buildImageHtml(imageId, altText) {
   const imgUrl = buildImageUrl(imageId);
   return imgUrl
-    ? `<img src="${imgUrl}" alt="${escapeHtml(altText)}" style="max-width:25vw; max-height:25vh; width:auto; height:auto; object-fit:cover;">`
+    ? `<img src="${imgUrl}" alt="${escapeHtml(altText)}" style="max-width:100%; height:auto; max-height:40vh; display:block; object-fit:cover;">`
     : '<div class="popup-image-empty">画像なし</div>';
 }
 
@@ -1023,12 +1035,20 @@ function buildShishiPopupContent(shishi) {
     ? `<p><button onclick="startNavigation(${coords[0]},${coords[1]})" style="display:inline-block;margin-top:8px;padding:6px 8px;background:#007bff;color:#fff;border-radius:4px;border:none;cursor:pointer">ここまで行く</button></p>`
     : '';
 
+  // attempt to find an external URL on the shishi/current record
+  const externalCandidate = resolveExternalUrl(shishi);
+  const externalUrl = sanitizeExternalUrl(externalCandidate);
+  const linkHtml = externalUrl
+    ? `<p><a href="${externalUrl}" target="_blank" rel="noopener noreferrer">詳細をみる</a></p>`
+    : '';
+
   return `
     <div class="shishi-popup">
       <h3>${safeName}</h3>
       ${buildDescriptionHtml(shishi.description)}
       ${buildImageHtml(extractFileId(shishi.photo || shishi.image), shishi.name || '獅子舞画像')}
       ${navHtml}
+      ${linkHtml}
     </div>
   `;
 }
