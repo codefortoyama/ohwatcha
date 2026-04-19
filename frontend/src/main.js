@@ -922,8 +922,18 @@ function renderShopFilterUI() {
   const form = document.getElementById('shop-type-form');
   const toggle = document.getElementById('shop-filters-toggle');
 
-  // build checkboxes
+  // Only show checkboxes for types that have at least one record in shopsData
+  const typeHasRecord = {};
+  if (Array.isArray(shopsData)) {
+    shopsData.forEach((shop) => {
+      const type = shop.type || shop.category || shop.shop_type || null;
+      const typeVal = String(type ?? '');
+      if (typeVal) typeHasRecord[typeVal] = true;
+    });
+  }
+
   Object.entries(SHOP_TYPE_MAP).forEach(([k, v]) => {
+    if (!typeHasRecord[k]) return; // skip types with no records
     const id = `shop-type-${k}`;
     const wrapper = document.createElement('div');
     wrapper.style.marginBottom = '6px';
