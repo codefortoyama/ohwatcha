@@ -5,11 +5,25 @@ const DIRECTUS_URL = (
   document.querySelector('meta[name="directus-url"]')?.content ||
   'https://cms.ohwatcha.evolinq.link'
 ).replace(/\/$/, '');
-const API_BASE = (
+const configuredApiBase =
   env.VITE_API_BASE ||
-  document.querySelector('meta[name="api-base"]')?.content ||
-  '/api'
+  document.querySelector('meta[name="api-base"]')?.content;
+const API_BASE = (
+  configuredApiBase ||
+  (env.DEV ? '/api' : DIRECTUS_URL)
 ).replace(/\/$/, '');
+const RELATIVE_API_BASE = API_BASE.startsWith('/');
+let relativeApiBaseDisabled = false;
+
+function shouldUseRelativeApiBase() {
+  return RELATIVE_API_BASE && !relativeApiBaseDisabled;
+}
+
+function disableRelativeApiBase(reason) {
+  if (!RELATIVE_API_BASE || relativeApiBaseDisabled) return;
+  relativeApiBaseDisabled = true;
+  console.warn(`API base "${API_BASE}" disabled: ${reason}. Falling back to "${DIRECTUS_URL}".`);
+}
 const UPDATE_INTERVAL = 60000;
 // Maximum age (hours) for showing recent locations; configurable via Vite env:
 // - VITE_SHISHI_MAX_AGE_HOURS (preferred)
@@ -51,11 +65,18 @@ for (const p in iconFiles) {
 
 // shop icon cache by url
 const shopIconCache = new Map();
+const MAP_MARKER_ICON_CLASS = 'ohwatcha-marker-icon';
 function getLeafletIconForUrl(url, { iconSize = [32, 32] } = {}) {
   if (!url) return null;
   if (shopIconCache.has(url)) return shopIconCache.get(url);
   try {
-    const ic = L.icon({ iconUrl: url, iconSize, iconAnchor: [Math.round(iconSize[0] / 2), iconSize[1]], popupAnchor: [0, -iconSize[1]] });
+    const ic = L.icon({
+      iconUrl: url,
+      iconSize,
+      iconAnchor: [Math.round(iconSize[0] / 2), iconSize[1]],
+      popupAnchor: [0, -iconSize[1]],
+      className: MAP_MARKER_ICON_CLASS
+    });
     shopIconCache.set(url, ic);
     return ic;
   } catch (e) {
@@ -116,13 +137,128 @@ const gsiAerial = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/ort/{z}/{x}/
   attribution: '&copy; Geospatial Information Authority of Japan (航空写真)'
 });
 
-gsiAerial.addTo(map);
-const layerControl = L.control.layers({
+const baseLayers = {
   OpenStreetMap: osmLayer,
   '地理院地図（標準）': gsiStd,
   '地理院地図（淡色）': gsiPale,
   '地理院地図（空中写真）': gsiAerial
-}, null, { position: 'bottomright' }).addTo(map);
+};
+let currentBaseOpacity = 1;
+const setBaseLayerOpacity = (nextOpacity) => {
+  const clamped = Math.max(0, Math.min(1, Number(nextOpacity)));
+  currentBaseOpacity = clamped;
+  Object.values(baseLayers).forEach((layer) => {
+    try { layer.setOpacity(clamped); } catch (e) {}
+  });
+};
+
+gsiAerial.addTo(map);
+currentBaseOpacity = 0.8;
+setBaseLayerOpacity(currentBaseOpacity);
+const layerControl = L.control.layers(baseLayers, null, { position: 'bottomright' }).addTo(map);
+
+// opacity slider for background map tiles
+const opacityControl = L.control({ position: 'bottomleft' });
+opacityControl.onAdd = () => {
+  const wrap = L.DomUtil.create('div', 'leaflet-bar');
+  Object.assign(wrap.style, {
+    background: 'rgba(255,255,255,0.95)',
+    borderRadius: '6px',
+    padding: '8px 10px',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+    marginLeft: '12px',
+    marginBottom: '72px',
+    minWidth: '140px'
+  });
+
+  const header = L.DomUtil.create('div', '', wrap);
+  Object.assign(header.style, {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '8px'
+  });
+
+  const label = L.DomUtil.create('span', '', header);
+  label.textContent = '地図透明度';
+  Object.assign(label.style, {
+    display: 'block',
+    fontSize: '12px',
+    color: '#333'
+  });
+
+  const toggle = L.DomUtil.create('button', '', header);
+  toggle.type = 'button';
+  toggle.title = '折りたたむ／開く';
+  Object.assign(toggle.style, {
+    border: 'none',
+    background: 'transparent',
+    cursor: 'pointer',
+    fontSize: '14px',
+    lineHeight: '1',
+    padding: '0 2px'
+  });
+
+  const row = L.DomUtil.create('div', '', wrap);
+  Object.assign(row.style, {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    marginTop: '6px'
+  });
+
+  const slider = L.DomUtil.create('input', '', row);
+  slider.type = 'range';
+  slider.min = '0';
+  slider.max = '100';
+  slider.step = '1';
+  slider.value = String(Math.round(currentBaseOpacity * 100));
+  Object.assign(slider.style, {
+    width: '92px'
+  });
+
+  const value = L.DomUtil.create('span', '', row);
+  value.textContent = `${Math.round(currentBaseOpacity * 100)}%`;
+  Object.assign(value.style, {
+    fontSize: '12px',
+    color: '#333',
+    minWidth: '34px',
+    textAlign: 'right'
+  });
+
+  const onInput = () => {
+    const next = Number(slider.value) / 100;
+    setBaseLayerOpacity(next);
+    value.textContent = `${Math.round(next * 100)}%`;
+  };
+  slider.addEventListener('input', onInput);
+  slider.addEventListener('change', onInput);
+
+  let collapsed = true;
+  const applyCollapsedState = () => {
+    row.style.display = collapsed ? 'none' : 'flex';
+    toggle.textContent = collapsed ? '▸' : '▾';
+    toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    wrap.style.minWidth = collapsed ? 'auto' : '140px';
+  };
+  toggle.addEventListener('click', () => {
+    collapsed = !collapsed;
+    applyCollapsedState();
+  });
+  applyCollapsedState();
+
+  L.DomEvent.disableClickPropagation(wrap);
+  L.DomEvent.disableScrollPropagation(wrap);
+
+  return wrap;
+};
+opacityControl.addTo(map);
+
+map.on('baselayerchange', (ev) => {
+  try {
+    if (ev && ev.layer && ev.layer.setOpacity) ev.layer.setOpacity(currentBaseOpacity);
+  } catch (e) {}
+});
 
 // Nudge the layer control up so it doesn't overlap browser bottom UI
 try {
@@ -234,14 +370,16 @@ const shishiIcon = L.icon({
   iconUrl: shishiIconUrl,
   iconSize: [48, 48],
   iconAnchor: [24, 48],
-  popupAnchor: [0, -48]
+  popupAnchor: [0, -48],
+  className: MAP_MARKER_ICON_CLASS
 });
 
 const shopIcon = L.icon({
   iconUrl: shopIconUrl,
   iconSize: [32, 32],
   iconAnchor: [16, 32],
-  popupAnchor: [0, -32]
+  popupAnchor: [0, -32],
+  className: MAP_MARKER_ICON_CLASS
 });
 
 // create homeIcon while preserving aspect ratio (fit within max size)
@@ -259,7 +397,8 @@ if (homeIconUrl) {
         iconUrl: homeIconUrl,
         iconSize: [w, h],
         iconAnchor: [Math.round(w / 2), h],
-        popupAnchor: [0, -h]
+        popupAnchor: [0, -h],
+        className: MAP_MARKER_ICON_CLASS
       });
       // apply to existing current location marker if present
       try {
@@ -326,6 +465,7 @@ try {
 try {
   const popupStyle = document.createElement('style');
   popupStyle.textContent = `
+    .leaflet-marker-icon.${MAP_MARKER_ICON_CLASS} { object-fit: contain; object-position: center center; }
     .shop-popup img, .shishi-popup img { max-width: 100%; height: auto; max-height: 40vh; display: block; object-fit: cover; }
     .shop-popup .popup-image-empty, .shishi-popup .popup-image-empty { color: #666; font-size: 0.95rem; }
   `;
@@ -463,11 +603,41 @@ if (!document.getElementById('sponsor-banner-wrap')) {
   document.body.appendChild(locateBtn);
 }
 
-// --- Sponsor banner (rotate images in frontend/assets/banner every 15s) ---
-{
-  const imgs = import.meta.glob('../assets/banner/*.{png,jpg,jpeg,svg,gif,webp}', { eager: true });
-  const urls = Object.values(imgs).map(m => (m && (m.default || m)) ).filter(Boolean);
-  if (urls.length > 0) {
+// --- Sponsor banner (fetch from CMS `banner` collection and rotate) ---
+;(async function renderBannersFromCMS() {
+  try {
+    const toBannerItems = (raw) => (Array.isArray(raw) ? raw : [])
+      .filter(Boolean)
+      .map((b) => ({
+      raw: b,
+      category: b.category ?? '',
+      imageId: extractFileId(b.banner_image || b.image),
+      name: b.name ?? '',
+      url: extractUrlFromField(b.url) ?? ''
+    }))
+      .filter((i) => i.imageId || i.name);
+
+    let raw = await fetchCollection('banner');
+    console.debug('banner fetch result (primary)', raw);
+    let items = toBannerItems(raw);
+
+    // If proxy/public response has no usable URL, retry direct Directus endpoint
+    // and prefer direct response when primary has no items, or when it restores URLs.
+    if (items.length === 0 || !items.some((i) => sanitizeExternalUrl(i.url))) {
+      const directRaw = await fetchCollectionDirect('banner');
+      const directItems = toBannerItems(directRaw);
+      if (directItems.length > 0 && (items.length === 0 || directItems.some((i) => sanitizeExternalUrl(i.url)))) {
+        console.info('banner: using direct endpoint response because primary was empty or had no valid URL');
+        raw = directRaw;
+        items = directItems;
+      }
+    }
+
+    if (items.length === 0) {
+      console.warn('banner: no displayable items', { primary: raw });
+      return;
+    }
+
     // create container
     const bannerWrap = document.createElement('div');
     bannerWrap.id = 'sponsor-banner-wrap';
@@ -483,7 +653,6 @@ if (!document.getElementById('sponsor-banner-wrap')) {
       padding: '6px',
       background: 'rgba(255,255,255,0.95)',
       boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
-      // ensure banner sits above leaflet map panes/controls
       zIndex: 2002,
       pointerEvents: 'auto'
     });
@@ -498,33 +667,14 @@ if (!document.getElementById('sponsor-banner-wrap')) {
       display: 'block'
     });
 
-    // try each URL until one loads (fallback for formats not supported on some devices)
-    let bannerIdx = 0;
-    const tryLoad = (i) => {
-      if (!urls || urls.length === 0) return;
-      bannerIdx = i % urls.length;
-      img.src = urls[bannerIdx];
-    };
+    // anchor wraps image when a target URL exists
+    const anchor = document.createElement('a');
+    anchor.target = '_blank';
+    anchor.rel = 'noopener noreferrer';
+    anchor.appendChild(img);
 
-    img.onload = () => {
-      // ensure visible when loaded
-      try {
-        bannerWrap.style.display = 'flex';
-        adjustMapForBanner();
-      } catch (e) {}
-    };
-    img.onerror = () => {
-      // try next url
-      const next = (bannerIdx + 1) % urls.length;
-      if (next === bannerIdx) {
-        console.warn('sponsor banner: all image URLs failed to load', urls);
-        return;
-      }
-      tryLoad(next);
-    };
+    console.debug('banner items resolved', items.map(i => ({ category: i.category, imageId: i.imageId, name: i.name, hasUrl: Boolean(i.url) })));
 
-    // start trying to load
-    tryLoad(0);
     // center the image inside a flexible container so it's always centered
     const imgContainer = document.createElement('div');
     Object.assign(imgContainer.style, {
@@ -533,9 +683,10 @@ if (!document.getElementById('sponsor-banner-wrap')) {
       alignItems: 'center',
       flex: '1 1 auto'
     });
-    // left label "協賛" placed immediately to the left of the image
+
+    // left label (use .category for current banner)
     const leftLabel = document.createElement('div');
-    leftLabel.textContent = '協賛';
+    leftLabel.textContent = items[0].category || '';
     Object.assign(leftLabel.style, {
       marginRight: '8px',
       flex: '0 0 auto',
@@ -544,15 +695,14 @@ if (!document.getElementById('sponsor-banner-wrap')) {
       color: '#333',
       pointerEvents: 'none'
     });
-    // append label then image so label appears to the left of the image
+
     imgContainer.appendChild(leftLabel);
-    imgContainer.appendChild(img);
+    imgContainer.appendChild(anchor);
     bannerWrap.appendChild(imgContainer);
 
     // Do NOT append the locate button into the banner; it will be positioned
     // below the banner by `adjustMapForBanner` so it doesn't interfere with centering.
     try {
-      // clear any banner-specific positioning previously applied
       Object.assign(locateBtn.style, {
         position: '',
         right: '',
@@ -563,37 +713,95 @@ if (!document.getElementById('sponsor-banner-wrap')) {
     } catch (e) {
       console.warn('prepare locateBtn failed', e);
     }
+
     document.body.insertBefore(bannerWrap, document.body.firstChild);
     try { adjustMapForBanner(); } catch (e) {}
 
-    // if banner has zero height on some devices, force visible style and try to reload image
-    setTimeout(() => {
-      try {
-        const h = bannerWrap.offsetHeight;
-        if (!h || h === 0) {
-          console.warn('sponsor banner appears zero-height; forcing display');
-          bannerWrap.style.display = 'flex';
-          bannerWrap.style.visibility = 'visible';
-          bannerWrap.style.opacity = '1';
-          // re-attempt load sequence
-          tryLoad((bannerIdx + 1) % urls.length);
-          adjustMapForBanner();
-        }
-      } catch (e) {}
-    }, 400);
-
+    // rotation logic: load image URL and set anchor href if present
     let idx = 0;
-    const rotate = () => {
-      idx = (idx + 1) % urls.length;
-      img.src = urls[idx];
-    };
-    const timer = setInterval(rotate, 15000);
+    let currentImageCandidates = [];
+    let currentImageAttempt = 0;
 
-    // pause rotation on hover
+    const applyTextFallback = (it) => {
+      img.style.display = 'none';
+      if (!anchor.querySelector('.banner-text')) {
+        const textDiv = document.createElement('div');
+        textDiv.className = 'banner-text';
+        textDiv.textContent = it.name || '';
+        textDiv.style.fontSize = '1.1rem';
+        textDiv.style.fontWeight = 'bold';
+        textDiv.style.color = '#333';
+        textDiv.style.padding = '4px 12px';
+        anchor.appendChild(textDiv);
+      } else {
+        anchor.querySelector('.banner-text').textContent = it.name || '';
+      }
+    };
+
+    const tryLoad = (i) => {
+      if (!items || items.length === 0) return;
+      idx = i % items.length;
+      const it = items[idx];
+      currentImageCandidates = buildImageUrls(it.imageId);
+      currentImageAttempt = 0;
+      const explicitHref = sanitizeExternalUrl(it.url);
+      if (!currentImageCandidates.length) {
+        // 画像がない場合はテキストで表示
+        applyTextFallback(it);
+      } else {
+        // 画像がある場合は画像を表示しテキストを消す
+        img.style.display = 'block';
+        img.src = currentImageCandidates[currentImageAttempt];
+        const textDiv = anchor.querySelector('.banner-text');
+        if (textDiv) textDiv.remove();
+      }
+      if (explicitHref) {
+        anchor.href = explicitHref;
+        anchor.style.cursor = 'pointer';
+        img.style.cursor = 'pointer';
+      } else {
+        anchor.removeAttribute('href');
+        anchor.style.cursor = 'default';
+        img.style.cursor = 'default';
+      }
+      leftLabel.textContent = it.category || '';
+    };
+
+    img.onload = () => {
+      try { bannerWrap.style.display = 'flex'; adjustMapForBanner(); } catch (e) {}
+    };
+    img.onerror = () => {
+      if (currentImageCandidates.length > 0 && currentImageAttempt < currentImageCandidates.length - 1) {
+        currentImageAttempt += 1;
+        img.src = currentImageCandidates[currentImageAttempt];
+        return;
+      }
+
+      const it = items[idx];
+      if (it && it.name) {
+        applyTextFallback(it);
+      }
+
+      const next = (idx + 1) % items.length;
+      if (next === idx && !(it && it.name)) {
+        console.warn('sponsor banner: all image URLs failed to load', items.map(i => i.imageId));
+        return;
+      }
+      if (next !== idx) {
+        tryLoad(next);
+      }
+    };
+
+    tryLoad(0);
+
+    const rotate = () => tryLoad((idx + 1) % items.length);
+    let timer = setInterval(rotate, 15000);
     img.addEventListener('mouseenter', () => clearInterval(timer));
-    img.addEventListener('mouseleave', () => setInterval(rotate, 15000));
+    img.addEventListener('mouseleave', () => { timer = setInterval(rotate, 15000); });
+  } catch (err) {
+    console.warn('renderBannersFromCMS failed', err);
   }
-}
+})();
 
 // startNavigation: obtain current position and open Google Maps directions
 window.startNavigation = function startNavigation(destLat, destLon) {
@@ -796,7 +1004,16 @@ function sanitizeExternalUrl(value) {
   }
 
   try {
-    const url = new URL(value, DIRECTUS_URL);
+    let raw = String(value).trim();
+    if (!raw) return null;
+    // Accept plain domains like "example.com" by prepending https.
+    if (
+      !/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(raw) &&
+      /^[^/\s]+\.[^/\s]+/.test(raw)
+    ) {
+      raw = `https://${raw}`;
+    }
+    const url = new URL(raw, DIRECTUS_URL);
     if (url.protocol === 'http:' || url.protocol === 'https:') {
       return url.href;
     }
@@ -838,19 +1055,41 @@ function extractFileId(fileField) {
   return null;
 }
 
-function buildImageUrl(imageId) {
+function buildImageUrls(imageId) {
   if (!imageId) {
-    return null;
+    return [];
   }
 
-  return `${DIRECTUS_URL}/assets/${encodeURIComponent(String(imageId))}?width=400`;
+  const assetPath = `/assets/${encodeURIComponent(String(imageId))}?width=400`;
+  const urls = [];
+
+  // If API_BASE is a relative path (e.g. '/api'), request via API_BASE so
+  // the Vite dev proxy can forward the request to the CMS and avoid CORS.
+  if (shouldUseRelativeApiBase()) {
+    urls.push(`${API_BASE}${assetPath}`);
+  }
+
+  // Also include direct CMS URL as fallback.
+  urls.push(`${DIRECTUS_URL}${assetPath}`);
+  return [...new Set(urls)];
+}
+
+function buildImageUrl(imageId) {
+  const urls = buildImageUrls(imageId);
+  return urls.length ? urls[0] : null;
 }
 
 function buildEndpoints(collection) {
   const path = `/items/${collection}`;
-  const primary = `${API_BASE}${path}`;
-  const fallback = `${DIRECTUS_URL}${path}`;
-  return primary === fallback ? [primary] : [primary, fallback];
+  const endpoints = [];
+  if (shouldUseRelativeApiBase()) {
+    endpoints.push(`${API_BASE}${path}`);
+  }
+  const direct = `${DIRECTUS_URL}${path}`;
+  if (!endpoints.includes(direct)) {
+    endpoints.push(direct);
+  }
+  return endpoints;
 }
 
 function extractCoordinates(item) {
@@ -975,6 +1214,11 @@ function resolveExternalUrl(shop) {
 
 function buildShopPopupContent(shop) {
   const safeName = escapeHtml(shop.name || '名称未設定');
+  const shopImageId = extractFileId(shop.image || shop.photo);
+  const photoCredit = String(shop.photo_credit ?? '').trim();
+  const photoCreditHtml = photoCredit
+    ? `<p style="margin:4px 0 0;color:#666;font-size:0.82rem;">写真提供: ${formatText(photoCredit)}</p>`
+    : '';
   // prefer common URL fields; fallback to instagram_url if present
   const externalCandidate = resolveExternalUrl(shop);
   const externalUrl = sanitizeExternalUrl(externalCandidate);
@@ -1019,7 +1263,8 @@ function buildShopPopupContent(shop) {
     <div class="shop-popup">
       <h3>${safeName}</h3>
       ${buildDescriptionHtml(shop.description)}
-      ${buildImageHtml(extractFileId(shop.image || shop.photo), shop.name || '店舗画像')}
+      ${buildImageHtml(shopImageId, shop.name || '店舗画像')}
+      ${photoCreditHtml}
       ${externalHtml}
       ${debugHtml}
     </div>
@@ -1053,21 +1298,47 @@ function buildShishiPopupContent(shishi) {
   `;
 }
 
+function extractItemsFromPayload(payload) {
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload)) return payload;
+  return [];
+}
+
+async function parseCollectionResponseAsJson(resp, url) {
+  const text = await resp.text();
+  if (!text) return [];
+
+  try {
+    const payload = JSON.parse(text);
+    return extractItemsFromPayload(payload);
+  } catch (error) {
+    const preview = text.slice(0, 80).replace(/\s+/g, ' ');
+    const htmlLike = /^\s*<!doctype html/i.test(text) || /^\s*<html/i.test(text);
+    if (RELATIVE_API_BASE && typeof url === 'string' && url.startsWith(`${API_BASE}/`) && htmlLike) {
+      disableRelativeApiBase('received HTML instead of JSON');
+    }
+    console.warn(`fetch ${url} returned non-JSON response`, { preview, error });
+    return null;
+  }
+}
+
 async function fetchCollection(collection) {
+  const headers = { Accept: 'application/json' };
+  // support optional Directus public token for private collections
+  if (env.VITE_DIRECTUS_TOKEN) {
+    headers.Authorization = `Bearer ${env.VITE_DIRECTUS_TOKEN}`;
+  }
+
   for (const url of buildEndpoints(collection)) {
     try {
-      const resp = await fetch(url, {
-        headers: {
-          Accept: 'application/json'
-        }
-      });
+      const resp = await fetch(url, { headers });
       if (!resp.ok) {
         console.warn(`fetch ${url} returned ${resp.status}`);
         continue;
       }
-
-      const payload = await resp.json();
-      return Array.isArray(payload.data) ? payload.data : [];
+      const items = await parseCollectionResponseAsJson(resp, url);
+      if (items === null) continue;
+      return items;
     } catch (error) {
       console.warn(`fetch ${url} failed:`, error);
     }
@@ -1075,6 +1346,25 @@ async function fetchCollection(collection) {
 
   console.error(`${collection} データの取得に失敗しました`);
   return null;
+}
+
+async function fetchCollectionDirect(collection) {
+  const url = `${DIRECTUS_URL}/items/${collection}`;
+  try {
+    const headers = { Accept: 'application/json' };
+    if (env.VITE_DIRECTUS_TOKEN) {
+      headers.Authorization = `Bearer ${env.VITE_DIRECTUS_TOKEN}`;
+    }
+    const resp = await fetch(url, { headers });
+    if (!resp.ok) {
+      console.warn(`fetch direct ${url} returned ${resp.status}`);
+      return null;
+    }
+    return await parseCollectionResponseAsJson(resp, url);
+  } catch (error) {
+    console.warn(`fetch direct ${url} failed:`, error);
+    return null;
+  }
 }
 
 async function fetchShops() {
@@ -1106,6 +1396,9 @@ async function updateShishiLocation() {
       return isWithinHours(ts, MAX_AGE_HOURS);
     });
   }
+
+  // show only items that are explicitly marked visible === true
+  recentList = recentList.filter((it) => it && it.visible === true);
 
   // if you want to fall back to showing items without timestamps, modify above
 
